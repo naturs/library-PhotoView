@@ -53,7 +53,7 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
 
     // let debug flag be dynamic, but still Proguard can be used to remove from
     // release builds
-    private static final boolean DEBUG = Log.isLoggable(LOG_TAG, Log.DEBUG);
+    private static final boolean DEBUG = /*Log.isLoggable(LOG_TAG, Log.DEBUG)*/true;
 
     static final Interpolator sInterpolator = new AccelerateDecelerateInterpolator();
     int ZOOM_DURATION = DEFAULT_ZOOM_DURATION;
@@ -88,6 +88,12 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
     }
 
     /**
+     * 该方法再该类的{@link #setScaleType(ScaleType)}方法中调用，虽然PhotoView中重写
+     * 了setScaleType方法，但在方法的实现中并没有调用super.setScaleType()，而是转而
+     * 调用该类中的setScaleType方法。<p>
+     * 在setScaleType()中设置的scaleType并没有被设置到ImageView中，而是保存下来，然后
+     * 根据该值来改变matrix的值，进而设置到ImageView上。<p>
+     * 所以，在这里设置的scaleType的值，不能为ScaleType.Matrix.
      * @return true if the ScaleType is supported.
      */
     private static boolean isSupportedScaleType(final ScaleType scaleType) {
@@ -107,12 +113,16 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
 
     /**
      * Set's the ImageView's ScaleType to Matrix.
+     * 
+     * 将当前的ImageView的ScaleType设置为Matrix.
      */
     private static void setImageViewScaleTypeMatrix(ImageView imageView) {
         /**
          * PhotoView sets it's own ScaleType to Matrix, then diverts all calls
          * setScaleType to this.setScaleType automatically.
          */
+    	// 这里用imageView instanceOf PhotoView应该更好，因为在PhotoView中
+    	// 已经设置了ImageView的ScaleType为Matrix.
         if (null != imageView && !(imageView instanceof IPhotoView)) {
             if (!ScaleType.MATRIX.equals(imageView.getScaleType())) {
                 imageView.setScaleType(ScaleType.MATRIX);
@@ -144,6 +154,11 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
     private int mScrollEdge = EDGE_BOTH;
 
     private boolean mZoomEnabled;
+    
+    /**
+     * 这个值只是在这里保存了下来，并没有被设置到ImageView中去，它的
+     * 作用是合理更改Matrix的值，然后将Matrix设置到ImageView中去。
+     */
     private ScaleType mScaleType = ScaleType.FIT_CENTER;
 
     public PhotoViewAttacher(ImageView imageView) {
@@ -398,6 +413,21 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
                 getImageViewHeight(imageView), (int) velocityX, (int) velocityY);
         imageView.post(mCurrentFlingRunnable);
     }
+    
+    @Override
+    public void onScale(float scaleFactor, float focusX, float focusY) {
+        if (DEBUG) {
+            LogManager.getLogger().d(
+                    LOG_TAG,
+                    String.format("onScale: scale: %.2f. fX: %.2f. fY: %.2f",
+                            scaleFactor, focusX, focusY));
+        }
+
+        if (getScale() < mMaxScale || scaleFactor < 1f) {
+            mSuppMatrix.postScale(scaleFactor, scaleFactor, focusX, focusY);
+            checkAndDisplayMatrix();
+        }
+    }
 
     @Override
     public void onGlobalLayout() {
@@ -435,24 +465,10 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
     }
 
     @Override
-    public void onScale(float scaleFactor, float focusX, float focusY) {
-        if (DEBUG) {
-            LogManager.getLogger().d(
-                    LOG_TAG,
-                    String.format("onScale: scale: %.2f. fX: %.2f. fY: %.2f",
-                            scaleFactor, focusX, focusY));
-        }
-
-        if (getScale() < mMaxScale || scaleFactor < 1f) {
-            mSuppMatrix.postScale(scaleFactor, scaleFactor, focusX, focusY);
-            checkAndDisplayMatrix();
-        }
-    }
-
-    @Override
     public boolean onTouch(View v, MotionEvent ev) {
         boolean handled = false;
-
+//        System.out.println("宽度：" +
+//getImageView().getDrawable().getIntrinsicWidth() + " 高度：" + getImageView().getDrawable().getIntrinsicHeight()); 
         if (mZoomEnabled && hasDrawable((ImageView) v)) {
             ViewParent parent = v.getParent();
             switch (ev.getAction()) {
@@ -841,35 +857,58 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
         final int drawableWidth = d.getIntrinsicWidth();
         final int drawableHeight = d.getIntrinsicHeight();
 
+        if (DEBUG) {
+        	LogManager.getLogger().d(LOG_TAG, "dw:" + drawableWidth + " , dh:" + drawableHeight);
+        }
+        
+        // 此时图像的左上角位于坐标（0，0）处
+        
         mBaseMatrix.reset();
 
         final float widthScale = viewWidth / drawableWidth;
         final float heightScale = viewHeight / drawableHeight;
 
+        // 不对图像进行缩放，只将图像的中心移动到屏幕的中心
         if (mScaleType == ScaleType.CENTER) {
             mBaseMatrix.postTranslate((viewWidth - drawableWidth) / 2F,
                     (viewHeight - drawableHeight) / 2F);
 
         } else if (mScaleType == ScaleType.CENTER_CROP) {
+        	// 1.保证永远只有一个方向（水平或垂直）能完全显示在屏幕中，除非图像的宽高比等于显示控件的宽高比
+        	// 2.如果是宽图，则按高度比例缩放
+        	// 3.如果是长图，则按宽度比例缩放
+        	// 4.最后将缩放后的图像移动到屏幕中心
             float scale = Math.max(widthScale, heightScale);
+            
+            // 相对于原点进行缩放，规则参考上面2、3
+            // 会根据图片大小缩放，将图片缩放方向上完全显示在控件中
             mBaseMatrix.postScale(scale, scale);
+            
+            // drawableWidth * scale、drawableHeight * scale为新图片的宽和高
             mBaseMatrix.postTranslate((viewWidth - drawableWidth * scale) / 2F,
                     (viewHeight - drawableHeight * scale) / 2F);
 
         } else if (mScaleType == ScaleType.CENTER_INSIDE) {
+        	// 和CENTER_CROP缩放思想一致，但规则相反
+        	// 1.保证整个图像完全显示在屏幕中
+        	// 2.按缩放比例大的（即看宽和高哪个变化更大）缩放
+        	// 3.如果图像本身就能完全显示在屏幕中，则不缩放
+        	// 4.最后将缩放后的图像移动到屏幕中心
+        	
+        	// 这里Math.min(1.0f...是保证图片不会被放大，比如整个图片小于ImageView的时候
             float scale = Math.min(1.0f, Math.min(widthScale, heightScale));
             mBaseMatrix.postScale(scale, scale);
             mBaseMatrix.postTranslate((viewWidth - drawableWidth * scale) / 2F,
                     (viewHeight - drawableHeight * scale) / 2F);
 
         } else {
+        	// 参考：http://www.imobilebbs.com/wordpress/archives/1625
             RectF mTempSrc = new RectF(0, 0, drawableWidth, drawableHeight);
             RectF mTempDst = new RectF(0, 0, viewWidth, viewHeight);
 
             switch (mScaleType) {
                 case FIT_CENTER:
-                    mBaseMatrix
-                            .setRectToRect(mTempSrc, mTempDst, ScaleToFit.CENTER);
+                    mBaseMatrix.setRectToRect(mTempSrc, mTempDst, ScaleToFit.CENTER);
                     break;
 
                 case FIT_START:
