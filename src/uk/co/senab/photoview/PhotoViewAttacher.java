@@ -39,6 +39,7 @@ import java.lang.ref.WeakReference;
 import uk.co.senab.photoview.gestures.OnGestureListener;
 import uk.co.senab.photoview.gestures.VersionedGestureDetector;
 import uk.co.senab.photoview.log.LogManager;
+import uk.co.senab.photoview.log.Logger;
 import uk.co.senab.photoview.scrollerproxy.ScrollerProxy;
 
 import static android.view.MotionEvent.ACTION_CANCEL;
@@ -191,6 +192,7 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
                             mLongClickListener.onLongClick(getImageView());
                         }
                     }
+
                 });
 
         mGestureDetector.setOnDoubleTapListener(new DefaultOnDoubleTapListener(this));
@@ -467,8 +469,7 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
     @Override
     public boolean onTouch(View v, MotionEvent ev) {
         boolean handled = false;
-//        System.out.println("宽度：" +
-//getImageView().getDrawable().getIntrinsicWidth() + " 高度：" + getImageView().getDrawable().getIntrinsicHeight()); 
+        
         if (mZoomEnabled && hasDrawable((ImageView) v)) {
             ViewParent parent = v.getParent();
             switch (ev.getAction()) {
@@ -500,6 +501,7 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
                     break;
             }
 
+            // 这里一定会返回true，所以对PhotoView设置OnClickListener和OnLongClickListener都无效
             // Try the Scale/Drag detector
             if (null != mScaleDragDetector
                     && mScaleDragDetector.onTouchEvent(ev)) {
@@ -644,6 +646,12 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
         update();
     }
 
+    /**
+     * 3种情况下调用该方法：
+     * 1. 改变图片的源
+     * 2. 改变图片的ScaleType
+     * 3. 改变图片的可缩放性
+     */
     public void update() {
         ImageView imageView = getImageView();
 
@@ -666,6 +674,9 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
         return new Matrix(getDrawMatrix());
     }
 
+    /**
+     * @return mSuppMatrix * mBaseMatrix
+     */
     public Matrix getDrawMatrix() {
         mDrawMatrix.set(mBaseMatrix);
         mDrawMatrix.postConcat(mSuppMatrix);
@@ -703,6 +714,14 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
         }
     }
 
+    /**
+     * 检查图片的边界，使图片的边界出现在合适的位置，
+     * 该方法主要是改变mSuppMatrix的值。<p>
+     * 有些方法中调用了该方法后，并没有进行setImageMatrix操作，
+     * 比如{@link #setDisplayMatrix(Matrix)}，可能是因为有时候
+     * 用户希望图片显示到那个位置。其他的地方一般这两个值都是0.
+     * @return
+     */
     private boolean checkMatrixBounds() {
         final ImageView imageView = getImageView();
         if (null == imageView) {
@@ -714,28 +733,31 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
             return false;
         }
 
-        final float height = rect.height(), width = rect.width();
-        float deltaX = 0, deltaY = 0;
+        final float height = rect.height(), width = rect.width(); // 新的图像的宽度和高度
+        float deltaX = 0, deltaY = 0; // 为保证图像按要求正常显示，图像需要移动的距离
 
+        // 1. 垂直方向上
         final int viewHeight = getImageViewHeight(imageView);
-        if (height <= viewHeight) {
+        if (height <= viewHeight) { // 图像在高度上能完全显示在屏幕上
             switch (mScaleType) {
                 case FIT_START:
-                    deltaY = -rect.top;
+                    deltaY = -rect.top; // 向上移动到屏幕顶部
                     break;
                 case FIT_END:
-                    deltaY = viewHeight - height - rect.top;
+                    deltaY = viewHeight - height - rect.top; // 向下移动到屏幕底部
                     break;
                 default:
-                    deltaY = (viewHeight - height) / 2 - rect.top;
+                    deltaY = (viewHeight - height) / 2 - rect.top; // 移动到屏幕中间位置
                     break;
             }
-        } else if (rect.top > 0) {
-            deltaY = -rect.top;
-        } else if (rect.bottom < viewHeight) {
-            deltaY = viewHeight - rect.bottom;
+        // 图像的高度大于屏幕的高度，即图像不能完全显示在屏幕上
+        } else if (rect.top > 0) { // 如果图像的上边界出现在屏幕中
+            deltaY = -rect.top;    // 则将图像的上边界移回到屏幕的上边缘处
+        } else if (rect.bottom < viewHeight) { // 如果图像的下边界出现在屏幕中
+            deltaY = viewHeight - rect.bottom; // 则将图像的下边界移回到屏幕的下边缘处
         }
 
+        // 2. 水平方向上，同垂直方向
         final int viewWidth = getImageViewWidth(imageView);
         if (width <= viewWidth) {
             switch (mScaleType) {
@@ -762,12 +784,13 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
 
         // Finally actually translate the matrix
         mSuppMatrix.postTranslate(deltaX, deltaY);
+        
         return true;
     }
 
     /**
      * Helper method that maps the supplied Matrix to the current Drawable
-     *
+     * 得到图像变换后，图片的显示位置
      * @param matrix - Matrix to map Drawable against
      * @return RectF - Displayed Rectangle
      */
@@ -779,7 +802,12 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
             if (null != d) {
                 mDisplayRect.set(0, 0, d.getIntrinsicWidth(),
                         d.getIntrinsicHeight());
+                
+                // mapRect方法的作用就是将matrix应用于rect上面，
+                // 其实可以把这个rect当做一个ImageView，给这个
+                // ImageView应用matrix.
                 matrix.mapRect(mDisplayRect);
+                
                 return mDisplayRect;
             }
         }
@@ -842,6 +870,11 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
     }
 
     /**
+     * 该方法实质上只在初始化图片的时候调用，根据ImageView控件的大小、
+     * 图片的大小以及我们设置的ScaleType来调整图片的位置，进而获得
+     * 此时ImageView的Matrix，这是初始化ImageView的时候就有的Matrix，
+     * 所以叫做base matrix.
+     * 
      * Calculate Matrix for FIT_CENTER
      *
      * @param d - Drawable being displayed
@@ -903,24 +936,24 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
 
         } else {
         	// 参考：http://www.imobilebbs.com/wordpress/archives/1625
-            RectF mTempSrc = new RectF(0, 0, drawableWidth, drawableHeight);
-            RectF mTempDst = new RectF(0, 0, viewWidth, viewHeight);
+            RectF tempSrc = new RectF(0, 0, drawableWidth, drawableHeight);
+            RectF tempDst = new RectF(0, 0, viewWidth, viewHeight);
 
             switch (mScaleType) {
                 case FIT_CENTER:
-                    mBaseMatrix.setRectToRect(mTempSrc, mTempDst, ScaleToFit.CENTER);
+                    mBaseMatrix.setRectToRect(tempSrc, tempDst, ScaleToFit.CENTER);
                     break;
 
                 case FIT_START:
-                    mBaseMatrix.setRectToRect(mTempSrc, mTempDst, ScaleToFit.START);
+                    mBaseMatrix.setRectToRect(tempSrc, tempDst, ScaleToFit.START);
                     break;
 
                 case FIT_END:
-                    mBaseMatrix.setRectToRect(mTempSrc, mTempDst, ScaleToFit.END);
+                    mBaseMatrix.setRectToRect(tempSrc, tempDst, ScaleToFit.END);
                     break;
 
                 case FIT_XY:
-                    mBaseMatrix.setRectToRect(mTempSrc, mTempDst, ScaleToFit.FILL);
+                    mBaseMatrix.setRectToRect(tempSrc, tempDst, ScaleToFit.FILL);
                     break;
 
                 default:
