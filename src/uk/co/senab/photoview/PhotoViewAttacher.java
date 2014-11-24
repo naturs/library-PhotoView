@@ -1058,6 +1058,7 @@ public class PhotoViewAttacher implements IPhotoView, View.OnTouchListener,
             float scale = mZoomStart + t * (mZoomEnd - mZoomStart);
             float deltaScale = scale / getScale();
 
+            // 在本次scale的基础上变动deltaScale，就变成新的scale了
             mSuppMatrix.postScale(deltaScale, deltaScale, mFocalX, mFocalY);
             checkAndDisplayMatrix();
 
